@@ -1,14 +1,11 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { PDFParse } from 'pdf-parse';
 
-// ---------- Types ----------
 interface ExtractBody {
   fileBase64?: string;
   mimeType?: string;
   fileName?: string;
 }
 
-// ---------- Helpers ----------
 function parseNum(str?: string): number {
   if (!str) return 0;
   return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
@@ -16,19 +13,21 @@ function parseNum(str?: string): number {
 
 async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> {
   try {
+    // Lazy import to avoid crashing the whole function if pdf-parse fails in serverless
+    const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({ data: buffer });
     const textResult = await parser.getText();
     if (typeof (parser as any).destroy === 'function') {
       await (parser as any).destroy();
     }
     return textResult?.text || '';
-  } catch (err) {
-    console.warn('PDF text extraction error:', err);
+  } catch (err: any) {
+    console.warn('PDF text extraction skipped:', err?.message || err);
     return '';
   }
 }
 
-function parseMercadoPagoStatement(rawText: string, fileName: string) {
+function parseMercadoPagoStatement(rawText: string, _fileName: string) {
   const holderMatch = rawText.match(/RESUMEN DE CUENTA EN PESOS\s+([^\n\r]+)/);
   const cuitMatch = rawText.match(/CUIT\/\s*CUIL:\s*(\d{11})/);
   const cvuMatch = rawText.match(/CVU:\s*(\d{22})/);
@@ -65,7 +64,6 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
       let docType = 'Comprobante de Pago';
       let iibbCaba = 0;
       let iibbBsAs = 0;
-      let otherTaxes = 0;
       let netAmount = 0;
 
       if (/IIBB de Bs\.?\s*As\.?/i.test(desc)) {
@@ -80,22 +78,6 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
         vendor = 'Telecom Argentina S.A.';
         category = 'Servicios Públicos / Telecomunicaciones';
         netAmount = amount;
-      } else if (/CEAMSE/i.test(desc)) {
-        vendor = 'CEAMSE - Gestión Ambiental';
-        category = 'Servicios Públicos / Residuos';
-        netAmount = amount;
-      } else if (/AUSOL|AUSA|AU Oeste|AUBASA|TelePASE|RUTAS SUR/i.test(desc)) {
-        vendor = desc;
-        category = 'Logística / Peajes';
-        netAmount = amount;
-      } else if (/SUBE/i.test(desc)) {
-        vendor = 'SUBE - Transporte Público';
-        category = 'Logística / Transporte';
-        netAmount = amount;
-      } else if (/Google|netflix|spotify/i.test(desc)) {
-        vendor = desc;
-        category = 'Tecnología / Software';
-        netAmount = amount;
       } else if (/Pago con QR/i.test(desc)) {
         vendor = desc.replace(/Pago con QR\s*/i, '');
         category = 'Proveedores / Compras';
@@ -104,14 +86,6 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
       } else if (/Transferencia enviada/i.test(desc)) {
         vendor = desc.replace(/Transferencia enviada\s*/i, '');
         category = 'Transferencias a Proveedores';
-        netAmount = amount;
-      } else if (/Créditos de Mercado Pago/i.test(desc)) {
-        vendor = 'Mercado Pago Créditos';
-        category = 'Gastos Financieros';
-        netAmount = amount;
-      } else if (/Dinero reservado/i.test(desc)) {
-        vendor = desc;
-        category = 'Reservas Internas';
         netAmount = amount;
       } else {
         netAmount = amount;
@@ -135,7 +109,7 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
         iibbOther: 0,
         profitsTax: 0,
         exemptAmount: 0,
-        otherTaxes,
+        otherTaxes: 0,
         totalAmount: amount,
         category,
         notes: `Mercado Pago: ${desc} (Op: ${opId})`,
@@ -145,7 +119,6 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
 
   return {
     isStatement: true,
-    statementType: 'Mercado Pago',
     holder,
     cuit,
     cvu,
@@ -156,7 +129,7 @@ function parseMercadoPagoStatement(rawText: string, fileName: string) {
   };
 }
 
-function parseArgentineInvoiceText(rawText: string, fileName: string) {
+function parseArgentineInvoiceText(rawText: string, _fileName: string) {
   const dateMatch =
     rawText.match(/Fecha:\s*(\d{2})[\/-](\d{2})[\/-](\d{4})/i) ||
     rawText.match(/(\d{2})[\/-](\d{2})[\/-](\d{4})/);
@@ -180,17 +153,11 @@ function parseArgentineInvoiceText(rawText: string, fileName: string) {
   const docNumber = numMatch ? numMatch[1].replace(/\s+/g, '') : '00001-00000001';
 
   let docType = 'Factura A';
-  if (/\bCOD\.?\s*0?0?1\b/i.test(rawText) || /\bA\s+001\b/i.test(rawText) || /FACTURA\s+A\b/i.test(rawText)) {
-    docType = 'Factura A';
-  } else if (/\bCOD\.?\s*0?0?6\b/i.test(rawText) || /\bB\s+006\b/i.test(rawText) || /FACTURA\s+B\b/i.test(rawText)) {
-    docType = 'Factura B';
-  } else if (/\bCOD\.?\s*0?11\b/i.test(rawText) || /\bC\s+011\b/i.test(rawText) || /FACTURA\s+C\b/i.test(rawText)) {
-    docType = 'Factura C';
-  } else if (/RECIBO/i.test(rawText)) {
-    docType = 'Recibo';
-  } else if (/NOTA DE CR[EÉ]DITO/i.test(rawText)) {
-    docType = 'Nota de Crédito';
-  }
+  if (/FACTURA\s+A\b/i.test(rawText) || /\bCOD\.?\s*0?0?1\b/i.test(rawText)) docType = 'Factura A';
+  else if (/FACTURA\s+B\b/i.test(rawText) || /\bCOD\.?\s*0?0?6\b/i.test(rawText)) docType = 'Factura B';
+  else if (/FACTURA\s+C\b/i.test(rawText) || /\bCOD\.?\s*0?11\b/i.test(rawText)) docType = 'Factura C';
+  else if (/RECIBO/i.test(rawText)) docType = 'Recibo';
+  else if (/NOTA DE CR[EÉ]DITO/i.test(rawText)) docType = 'Nota de Crédito';
 
   const bsAsMatch =
     rawText.match(/([\d.,]+)\s+PERCEP\s*IIBB\s*BSAS/i) ||
@@ -201,11 +168,6 @@ function parseArgentineInvoiceText(rawText: string, fileName: string) {
     rawText.match(/([\d.,]+)\s+PERC(?:EP)?\s*IIBB\s*CABA/i) ||
     rawText.match(/PERC(?:EP)?\s*IIBB\s*CABA[^\d]*([\d.,]+)/i);
   const iibbCaba = parseNum(cabaMatch?.[1]);
-
-  const corMatch =
-    rawText.match(/([\d.,]+)\s+PERCEPC?\s*(?:CORRIENT|SANTA|CORDOBA|MENDOZA)/i) ||
-    rawText.match(/PERCEPC?\s*(?:CORRIENT|SANTA|CORDOBA|MENDOZA)[^\d]*([\d.,]+)/i);
-  const iibbOther = parseNum(corMatch?.[1]);
 
   const profitsMatch =
     rawText.match(/([\d.,]+)\s+PERCEP(?:CION)?\s*GANANCIAS/i) ||
@@ -249,23 +211,23 @@ function parseArgentineInvoiceText(rawText: string, fileName: string) {
     vatTotal,
     iibbCaba,
     iibbBsAs,
-    iibbOther,
+    iibbOther: 0,
     profitsTax,
     exemptAmount: 0,
     otherTaxes: 0,
     totalAmount,
     category: 'Mercaderías',
-    notes: 'Factura procesada con desglose de impuestos y percepciones provinciales',
+    notes: 'Factura procesada con desglose de impuestos',
   };
 }
 
-function generateHeuristicData(fileName?: string) {
+function emptyReceipt(fileName?: string) {
   return {
     date: new Date().toISOString().split('T')[0],
     docType: 'Factura A',
     docNumber: '00001-00000001',
     vendor: 'Proveedor',
-    cuit: '30-71234567-9',
+    cuit: '',
     currency: 'ARS',
     exchangeRate: 1,
     netAmount: 0,
@@ -281,55 +243,30 @@ function generateHeuristicData(fileName?: string) {
     otherTaxes: 0,
     totalAmount: 0,
     category: 'Varios',
-    notes: 'Comprobante procesado (modo heurístico)',
+    notes: fileName ? `Archivo: ${fileName}` : 'Sin datos extraídos',
   };
 }
 
-async function callGeminiWithRetry(fn: () => Promise<any>, retries = 2, delayMs = 1500) {
-  let lastError;
-  for (let i = 0; i <= retries; i++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      const isTransient =
-        err?.status === 503 ||
-        err?.status === 429 ||
-        err?.message?.includes('high demand') ||
-        err?.message?.includes('UNAVAILABLE');
-
-      if (isTransient && i < retries) {
-        console.warn(`Gemini API ocupado (intento ${i + 1}). Reintentando...`);
-        await new Promise((r) => setTimeout(r, delayMs));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
+function jsonResponse(statusCode: number, data: any) {
+  return {
+    statusCode,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    },
+    body: JSON.stringify(data),
+  };
 }
 
-// ---------- Handler ----------
 export const handler = async (event: any) => {
-  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-      body: '',
-    };
+    return jsonResponse(204, {});
   }
 
   if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: 'Method not allowed' }),
-    };
+    return jsonResponse(405, { error: 'Method not allowed' });
   }
 
   try {
@@ -337,108 +274,77 @@ export const handler = async (event: any) => {
     const { fileBase64, mimeType, fileName } = body;
 
     if (!fileBase64) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ error: 'Se requiere el archivo en base64.' }),
-      };
+      return jsonResponse(400, { error: 'Se requiere el archivo en base64.' });
     }
 
     const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '');
     const fileBuffer = Buffer.from(cleanBase64, 'base64');
     const isPdf =
       mimeType === 'application/pdf' ||
-      fileName?.toLowerCase().endsWith('.pdf') ||
+      (fileName || '').toLowerCase().endsWith('.pdf') ||
       cleanBase64.startsWith('JVBERi0');
 
     let rawPdfText = '';
-
     if (isPdf) {
       rawPdfText = await extractTextFromPdfBuffer(fileBuffer);
 
-      // Detect Mercado Pago / account statement
       if (
         /RESUMEN DE CUENTA/i.test(rawPdfText) &&
-        (/MERCADO\s*PAGO/i.test(rawPdfText) ||
-          /DETALLE DE MOVIMIENTOS/i.test(rawPdfText) ||
-          /CVU:/i.test(rawPdfText))
+        (/MERCADO\s*PAGO/i.test(rawPdfText) || /CVU:/i.test(rawPdfText))
       ) {
-        console.log(`Detectado Resumen de Cuenta (${fileName}). Parseando...`);
         const statementData = parseMercadoPagoStatement(rawPdfText, fileName || 'resumen.pdf');
-        return {
-          statusCode: 200,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-          body: JSON.stringify({
-            success: true,
-            isStatement: true,
-            statementSummary: {
-              holder: statementData.holder,
-              cuit: statementData.cuit,
-              totalInflows: statementData.totalInflows,
-              totalOutflows: statementData.totalOutflows,
-              count: statementData.movementCount,
-            },
-            items: statementData.items,
-            source: 'statement-parser',
-          }),
-        };
+        return jsonResponse(200, {
+          success: true,
+          isStatement: true,
+          statementSummary: {
+            holder: statementData.holder,
+            cuit: statementData.cuit,
+            totalInflows: statementData.totalInflows,
+            totalOutflows: statementData.totalOutflows,
+            count: statementData.movementCount,
+          },
+          items: statementData.items,
+          source: 'statement-parser',
+        });
       }
     }
 
-    // Gemini path
     const apiKey = process.env.GEMINI_API_KEY;
+
+    // Sin API key: usar parser de texto si hay, o devolver estructura vacía
     if (!apiKey) {
-      console.warn('GEMINI_API_KEY no configurada. Usando parser de texto.');
+      console.warn('GEMINI_API_KEY no configurada');
       const parsed =
-        isPdf && rawPdfText
+        isPdf && rawPdfText.length > 30
           ? parseArgentineInvoiceText(rawPdfText, fileName || '')
-          : generateHeuristicData(fileName);
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({
-          success: true,
-          items: [parsed],
-          source: 'text-parser',
-        }),
-      };
+          : emptyReceipt(fileName);
+      return jsonResponse(200, {
+        success: true,
+        items: [parsed],
+        source: 'text-parser',
+        warning: 'GEMINI_API_KEY no configurada',
+      });
     }
 
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: { headers: { 'User-Agent': 'contadoc-netlify' } },
-    });
+    const ai = new GoogleGenAI({ apiKey });
 
-    const promptText = `
-Eres un experto contador público especializado en comprobantes fiscales de Argentina (AFIP / ARCA, AGIP, ARBA, etc.).
-Analiza con máxima precisión contable este comprobante (Factura A, B, C, M, Ticket o Recibo).
+    const promptText = `Eres un experto contador público de Argentina (AFIP/ARCA, AGIP, ARBA).
+Analiza este comprobante y extrae los datos contables con precisión.
 
-REGLAS CONTABLES CRÍTICAS:
-1. "date": Fecha de emisión en formato ISO "YYYY-MM-DD".
-2. "netAmount": Importe Neto Gravado real (posterior a descuentos).
-3. "vat21", "vat105", "vat27": Importes de IVA por alícuota.
-4. "vatTotal": Suma total de IVA Crédito Fiscal.
-5. "iibbCaba": Percepciones/retenciones IIBB CABA (AGIP).
-6. "iibbBsAs": Percepciones/retenciones IIBB Bs. As. (ARBA).
-7. "iibbOther": Otras provincias.
-8. "profitsTax": Percepciones/retenciones de Ganancias.
-9. "exemptAmount": Importes No Gravados o Exentos.
-10. "otherTaxes": Impuestos Internos, Tasas, etc.
-11. "totalAmount": Importe Total final.
-12. "vendor": Razón social del emisor.
-13. "cuit": CUIT del emisor (formato XX-XXXXXXXX-X).
-14. "docType": Tipo ("Factura A", "Factura B", "Factura C", "Recibo", "Ticket", "Nota de Crédito").
-15. "docNumber": Punto de venta y número con formato "00000-00000000".
-16. "category": Rubro del gasto.
-17. "notes": Detalle resumido de los ítems.
+REGLAS:
+- date: ISO YYYY-MM-DD
+- netAmount: neto gravado (después de descuentos)
+- vat21, vat105, vat27, vatTotal
+- iibbCaba, iibbBsAs, iibbOther, profitsTax
+- totalAmount, vendor, cuit, docType, docNumber, category, notes
 
-${rawPdfText ? `Texto extraído del documento:\n"""\n${rawPdfText.substring(0, 4000)}\n"""` : ''}
-`;
+${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 'Analizá el archivo adjunto.'}`;
 
     const effectiveMime = isPdf ? 'application/pdf' : mimeType || 'image/jpeg';
     const parts: any[] = [];
 
-    if (!rawPdfText || rawPdfText.length < 50) {
+    // Siempre enviar el archivo a Gemini si no hay buen texto extraído
+    if (!rawPdfText || rawPdfText.length < 80) {
       parts.push({
         inlineData: {
           data: cleanBase64,
@@ -448,55 +354,44 @@ ${rawPdfText ? `Texto extraído del documento:\n"""\n${rawPdfText.substring(0, 4
     }
     parts.push({ text: promptText });
 
-    const response: any = await callGeminiWithRetry(async () => {
-      return await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: { parts },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              date: { type: Type.STRING },
-              docType: { type: Type.STRING },
-              docNumber: { type: Type.STRING },
-              vendor: { type: Type.STRING },
-              cuit: { type: Type.STRING },
-              currency: { type: Type.STRING },
-              exchangeRate: { type: Type.NUMBER },
-              netAmount: { type: Type.NUMBER },
-              vat21: { type: Type.NUMBER },
-              vat105: { type: Type.NUMBER },
-              vat27: { type: Type.NUMBER },
-              vatTotal: { type: Type.NUMBER },
-              iibbCaba: { type: Type.NUMBER },
-              iibbBsAs: { type: Type.NUMBER },
-              iibbOther: { type: Type.NUMBER },
-              profitsTax: { type: Type.NUMBER },
-              exemptAmount: { type: Type.NUMBER },
-              otherTaxes: { type: Type.NUMBER },
-              totalAmount: { type: Type.NUMBER },
-              category: { type: Type.STRING },
-              notes: { type: Type.STRING },
-            },
-            required: [
-              'date',
-              'docType',
-              'docNumber',
-              'vendor',
-              'cuit',
-              'netAmount',
-              'vatTotal',
-              'totalAmount',
-            ],
+    const response: any = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { parts },
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            date: { type: Type.STRING },
+            docType: { type: Type.STRING },
+            docNumber: { type: Type.STRING },
+            vendor: { type: Type.STRING },
+            cuit: { type: Type.STRING },
+            currency: { type: Type.STRING },
+            exchangeRate: { type: Type.NUMBER },
+            netAmount: { type: Type.NUMBER },
+            vat21: { type: Type.NUMBER },
+            vat105: { type: Type.NUMBER },
+            vat27: { type: Type.NUMBER },
+            vatTotal: { type: Type.NUMBER },
+            iibbCaba: { type: Type.NUMBER },
+            iibbBsAs: { type: Type.NUMBER },
+            iibbOther: { type: Type.NUMBER },
+            profitsTax: { type: Type.NUMBER },
+            exemptAmount: { type: Type.NUMBER },
+            otherTaxes: { type: Type.NUMBER },
+            totalAmount: { type: Type.NUMBER },
+            category: { type: Type.STRING },
+            notes: { type: Type.STRING },
           },
+          required: ['date', 'docType', 'docNumber', 'vendor', 'netAmount', 'vatTotal', 'totalAmount'],
         },
-      });
+      },
     });
 
-    const text = response.text;
+    const text = response?.text;
     if (!text) {
-      throw new Error('Gemini no retornó texto.');
+      throw new Error('Gemini no retornó texto');
     }
 
     const parsedData = JSON.parse(text);
@@ -514,7 +409,7 @@ ${rawPdfText ? `Texto extraído del documento:\n"""\n${rawPdfText.substring(0, 4
       vendor: parsedData.vendor || 'Proveedor',
       cuit: parsedData.cuit || '',
       currency: parsedData.currency || 'ARS',
-      exchangeRate: parsedData.exchangeRate || 1,
+      exchangeRate: Number(parsedData.exchangeRate) || 1,
       netAmount: Number(parsedData.netAmount) || 0,
       vat21: Number(parsedData.vat21) || 0,
       vat105: Number(parsedData.vat105) || 0,
@@ -535,49 +430,39 @@ ${rawPdfText ? `Texto extraído del documento:\n"""\n${rawPdfText.substring(0, 4
       notes: parsedData.notes || '',
     };
 
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({
-        success: true,
-        isStatement: false,
-        items: [normalized],
-        data: normalized,
-        source: 'gemini',
-      }),
-    };
+    return jsonResponse(200, {
+      success: true,
+      isStatement: false,
+      items: [normalized],
+      data: normalized,
+      source: 'gemini',
+    });
   } catch (error: any) {
-    console.warn('Error en extract:', error?.message || error);
+    console.error('Error en extract:', error?.message || error);
 
-    // Fallback determinístico
+    // Último recurso: intentar parser de texto
     try {
       const body: ExtractBody = JSON.parse(event.body || '{}');
       const cleanBase64 = (body.fileBase64 || '').replace(/^data:[^;]+;base64,/, '');
       const fileBuffer = Buffer.from(cleanBase64, 'base64');
       const pdfText = await extractTextFromPdfBuffer(fileBuffer);
-      const fallbackParsed = parseArgentineInvoiceText(pdfText || '', body.fileName || '');
 
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({
+      if (pdfText && pdfText.length > 30) {
+        const fallback = parseArgentineInvoiceText(pdfText, body.fileName || '');
+        return jsonResponse(200, {
           success: true,
-          items: [fallbackParsed],
-          data: fallbackParsed,
+          items: [fallback],
+          data: fallback,
           source: 'text-fallback',
-          warning: 'Procesado con parser contable de precisión.',
-        }),
-      };
-    } catch (fbErr) {
-      console.warn('Fallback parser failed:', fbErr);
+          warning: error?.message || 'Fallback por error de Gemini',
+        });
+      }
+    } catch (fbErr: any) {
+      console.warn('Fallback failed:', fbErr?.message);
     }
 
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({
-        error: error?.message || 'Error al procesar el comprobante.',
-      }),
-    };
+    return jsonResponse(500, {
+      error: error?.message || 'Error al procesar el comprobante.',
+    });
   }
 };
