@@ -270,27 +270,25 @@ function isTransientGeminiError(err: any): boolean {
     /high demand/i.test(msg) ||
     /UNAVAILABLE/i.test(msg) ||
     /try again later/i.test(msg) ||
-    /resource exhausted/i.test(msg)
+    /resource exhausted/i.test(msg) ||
+    /timeout/i.test(msg)
   );
 }
 
-async function callGeminiWithRetry(fn: () => Promise<any>, maxAttempts = 3) {
-  let lastError: any;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastError = err;
-      if (isTransientGeminiError(err) && attempt < maxAttempts) {
-        const waitMs = attempt * 1200; // 1.2s, 2.4s
-        console.warn(`Gemini ocupado (intento ${attempt}/${maxAttempts}). Reintento en ${waitMs}ms...`);
-        await new Promise((r) => setTimeout(r, waitMs));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
+/** Timeout duro para no superar el límite de 10s de Netlify Free */
+function withTimeout<T>(promise: Promise<T>, ms: number, label = 'timeout'): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(label)), ms);
+    promise
+      .then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      })
+      .catch((e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+  });
 }
 
 export const handler = async (event: any) => {
@@ -302,9 +300,14 @@ export const handler = async (event: any) => {
     return jsonResponse(405, { error: 'Method not allowed' });
   }
 
+  let rawPdfText = '';
+  let fileName = '';
+  let isPdf = false;
+
   try {
     const body: ExtractBody = JSON.parse(event.body || '{}');
-    const { fileBase64, mimeType, fileName } = body;
+    const { fileBase64, mimeType } = body;
+    fileName = body.fileName || '';
 
     if (!fileBase64) {
       return jsonResponse(400, { error: 'Se requiere el archivo en base64.' });
@@ -312,12 +315,11 @@ export const handler = async (event: any) => {
 
     const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '');
     const fileBuffer = Buffer.from(cleanBase64, 'base64');
-    const isPdf =
+    isPdf =
       mimeType === 'application/pdf' ||
-      (fileName || '').toLowerCase().endsWith('.pdf') ||
+      fileName.toLowerCase().endsWith('.pdf') ||
       cleanBase64.startsWith('JVBERi0');
 
-    let rawPdfText = '';
     if (isPdf) {
       rawPdfText = await extractTextFromPdfBuffer(fileBuffer);
 
@@ -344,11 +346,11 @@ export const handler = async (event: any) => {
 
     const apiKey = process.env.GEMINI_API_KEY;
 
+    // Sin API key o con buen texto: parser local (rápido, sin timeout)
     if (!apiKey) {
-      console.warn('GEMINI_API_KEY no configurada');
       const parsed =
         isPdf && rawPdfText.length > 30
-          ? parseArgentineInvoiceText(rawPdfText, fileName || '')
+          ? parseArgentineInvoiceText(rawPdfText, fileName)
           : emptyReceipt(fileName);
       return jsonResponse(200, {
         success: true,
@@ -357,6 +359,9 @@ export const handler = async (event: any) => {
         warning: 'GEMINI_API_KEY no configurada',
       });
     }
+
+    // Si el texto del PDF es suficiente, preferir texto (más rápido que mandar el PDF entero)
+    const hasGoodText = rawPdfText.length >= 80;
 
     const ai = new GoogleGenAI({ apiKey });
 
@@ -370,23 +375,22 @@ REGLAS:
 - iibbCaba, iibbBsAs, iibbOther, profitsTax
 - totalAmount, vendor, cuit, docType, docNumber, category, notes
 
-${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 'Analizá el archivo adjunto.'}`;
+${hasGoodText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 'Analizá el archivo adjunto.'}`;
 
-    const effectiveMime = isPdf ? 'application/pdf' : mimeType || 'image/jpeg';
     const parts: any[] = [];
-
-    if (!rawPdfText || rawPdfText.length < 80) {
+    if (!hasGoodText) {
       parts.push({
         inlineData: {
           data: cleanBase64,
-          mimeType: effectiveMime,
+          mimeType: isPdf ? 'application/pdf' : mimeType || 'image/jpeg',
         },
       });
     }
     parts.push({ text: promptText });
 
-    const response: any = await callGeminiWithRetry(async () => {
-      return await ai.models.generateContent({
+    // Un solo intento + timeout 7s (Netlify Free = 10s total)
+    const response: any = await withTimeout(
+      ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: { parts },
         config: {
@@ -419,8 +423,10 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
             required: ['date', 'docType', 'docNumber', 'vendor', 'netAmount', 'vatTotal', 'totalAmount'],
           },
         },
-      });
-    });
+      }),
+      7000,
+      'Gemini timeout (7s)'
+    );
 
     const text = response?.text;
     if (!text) {
@@ -473,37 +479,27 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
   } catch (error: any) {
     console.error('Error en extract:', error?.message || error);
 
-    // Fallback a parser de texto
-    try {
-      const body: ExtractBody = JSON.parse(event.body || '{}');
-      const cleanBase64 = (body.fileBase64 || '').replace(/^data:[^;]+;base64,/, '');
-      const fileBuffer = Buffer.from(cleanBase64, 'base64');
-      const pdfText = await extractTextFromPdfBuffer(fileBuffer);
-
-      if (pdfText && pdfText.length > 30) {
-        const fallback = parseArgentineInvoiceText(pdfText, body.fileName || '');
-        return jsonResponse(200, {
-          success: true,
-          items: [fallback],
-          data: fallback,
-          source: 'text-fallback',
-          warning: 'Gemini no disponible; se usó el parser de texto.',
-        });
-      }
-    } catch (fbErr: any) {
-      console.warn('Fallback failed:', fbErr?.message);
+    // Fallback rápido a parser de texto (sin llamar a Gemini de nuevo)
+    if (rawPdfText && rawPdfText.length > 30) {
+      const fallback = parseArgentineInvoiceText(rawPdfText, fileName);
+      return jsonResponse(200, {
+        success: true,
+        items: [fallback],
+        data: fallback,
+        source: 'text-fallback',
+        warning: 'Gemini lento o no disponible; se usó el parser de texto.',
+      });
     }
 
-    const msg = String(error?.message || '');
     if (isTransientGeminiError(error)) {
       return jsonResponse(503, {
         error:
-          'Gemini está saturado en este momento. Esperá 30–60 segundos y volvé a intentar.',
+          'Gemini está lento o saturado. Esperá 30–60 segundos y volvé a intentar.',
       });
     }
 
     return jsonResponse(500, {
-      error: msg || 'Error al procesar el comprobante.',
+      error: error?.message || 'Error al procesar el comprobante.',
     });
   }
 };
