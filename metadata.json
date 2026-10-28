@@ -1,0 +1,8 @@
+{
+  "name": "ContaDoc - Gestor Contable de Comprobantes",
+  "description": "Herramienta contable para procesar comprobantes de compras y pagos, desglosar Neto, IVA, IIBB CABA/Bs As y Ganancias, exportar a Excel y parametrizar importes a facturar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
