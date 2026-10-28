@@ -60,7 +60,7 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
         // Convert to base64
         const base64Data = await readFileAsBase64(file);
 
-        // Call backend /api/extract
+        // Call backend /api/extract (redirected to Netlify Function)
         const res = await fetch('/api/extract', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -71,10 +71,21 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({
           }),
         });
 
-        const json = await res.json();
+        // Safely parse JSON (avoid "Unexpected end of JSON input")
+        let json: any = {};
+        const text = await res.text();
+        try {
+          json = text ? JSON.parse(text) : {};
+        } catch {
+          throw new Error(
+            res.status === 404
+              ? 'Endpoint /api/extract no encontrado. Verificá el deploy de Netlify Functions.'
+              : `Respuesta inválida del servidor (HTTP ${res.status})`
+          );
+        }
 
         if (!res.ok && !json.items && !json.data && !json.fallbackData) {
-          throw new Error(json.error || 'Error al procesar el comprobante');
+          throw new Error(json.error || `Error al procesar el comprobante (HTTP ${res.status})`);
         }
 
         const rawItems = Array.isArray(json.items) && json.items.length > 0
