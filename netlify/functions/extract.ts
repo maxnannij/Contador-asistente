@@ -13,7 +13,6 @@ function parseNum(str?: string): number {
 
 async function extractTextFromPdfBuffer(buffer: Buffer): Promise<string> {
   try {
-    // Lazy import to avoid crashing the whole function if pdf-parse fails in serverless
     const { PDFParse } = await import('pdf-parse');
     const parser = new PDFParse({ data: buffer });
     const textResult = await parser.getText();
@@ -260,6 +259,40 @@ function jsonResponse(statusCode: number, data: any) {
   };
 }
 
+function isTransientGeminiError(err: any): boolean {
+  const msg = String(err?.message || err || '');
+  const status = err?.status || err?.code || err?.error?.code;
+  return (
+    status === 503 ||
+    status === 429 ||
+    status === 'UNAVAILABLE' ||
+    status === 'RESOURCE_EXHAUSTED' ||
+    /high demand/i.test(msg) ||
+    /UNAVAILABLE/i.test(msg) ||
+    /try again later/i.test(msg) ||
+    /resource exhausted/i.test(msg)
+  );
+}
+
+async function callGeminiWithRetry(fn: () => Promise<any>, maxAttempts = 3) {
+  let lastError: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      if (isTransientGeminiError(err) && attempt < maxAttempts) {
+        const waitMs = attempt * 1200; // 1.2s, 2.4s
+        console.warn(`Gemini ocupado (intento ${attempt}/${maxAttempts}). Reintento en ${waitMs}ms...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 export const handler = async (event: any) => {
   if (event.httpMethod === 'OPTIONS') {
     return jsonResponse(204, {});
@@ -352,39 +385,41 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
     }
     parts.push({ text: promptText });
 
-    const response: any = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: { parts },
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            date: { type: Type.STRING },
-            docType: { type: Type.STRING },
-            docNumber: { type: Type.STRING },
-            vendor: { type: Type.STRING },
-            cuit: { type: Type.STRING },
-            currency: { type: Type.STRING },
-            exchangeRate: { type: Type.NUMBER },
-            netAmount: { type: Type.NUMBER },
-            vat21: { type: Type.NUMBER },
-            vat105: { type: Type.NUMBER },
-            vat27: { type: Type.NUMBER },
-            vatTotal: { type: Type.NUMBER },
-            iibbCaba: { type: Type.NUMBER },
-            iibbBsAs: { type: Type.NUMBER },
-            iibbOther: { type: Type.NUMBER },
-            profitsTax: { type: Type.NUMBER },
-            exemptAmount: { type: Type.NUMBER },
-            otherTaxes: { type: Type.NUMBER },
-            totalAmount: { type: Type.NUMBER },
-            category: { type: Type.STRING },
-            notes: { type: Type.STRING },
+    const response: any = await callGeminiWithRetry(async () => {
+      return await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: { parts },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              date: { type: Type.STRING },
+              docType: { type: Type.STRING },
+              docNumber: { type: Type.STRING },
+              vendor: { type: Type.STRING },
+              cuit: { type: Type.STRING },
+              currency: { type: Type.STRING },
+              exchangeRate: { type: Type.NUMBER },
+              netAmount: { type: Type.NUMBER },
+              vat21: { type: Type.NUMBER },
+              vat105: { type: Type.NUMBER },
+              vat27: { type: Type.NUMBER },
+              vatTotal: { type: Type.NUMBER },
+              iibbCaba: { type: Type.NUMBER },
+              iibbBsAs: { type: Type.NUMBER },
+              iibbOther: { type: Type.NUMBER },
+              profitsTax: { type: Type.NUMBER },
+              exemptAmount: { type: Type.NUMBER },
+              otherTaxes: { type: Type.NUMBER },
+              totalAmount: { type: Type.NUMBER },
+              category: { type: Type.STRING },
+              notes: { type: Type.STRING },
+            },
+            required: ['date', 'docType', 'docNumber', 'vendor', 'netAmount', 'vatTotal', 'totalAmount'],
           },
-          required: ['date', 'docType', 'docNumber', 'vendor', 'netAmount', 'vatTotal', 'totalAmount'],
         },
-      },
+      });
     });
 
     const text = response?.text;
@@ -438,6 +473,7 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
   } catch (error: any) {
     console.error('Error en extract:', error?.message || error);
 
+    // Fallback a parser de texto
     try {
       const body: ExtractBody = JSON.parse(event.body || '{}');
       const cleanBase64 = (body.fileBase64 || '').replace(/^data:[^;]+;base64,/, '');
@@ -451,15 +487,23 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
           items: [fallback],
           data: fallback,
           source: 'text-fallback',
-          warning: error?.message || 'Fallback por error de Gemini',
+          warning: 'Gemini no disponible; se usó el parser de texto.',
         });
       }
     } catch (fbErr: any) {
       console.warn('Fallback failed:', fbErr?.message);
     }
 
+    const msg = String(error?.message || '');
+    if (isTransientGeminiError(error)) {
+      return jsonResponse(503, {
+        error:
+          'Gemini está saturado en este momento. Esperá 30–60 segundos y volvé a intentar.',
+      });
+    }
+
     return jsonResponse(500, {
-      error: error?.message || 'Error al procesar el comprobante.',
+      error: msg || 'Error al procesar el comprobante.',
     });
   }
 };
