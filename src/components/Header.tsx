@@ -1,5 +1,4 @@
 import { FileSpreadsheet, Copy, Sparkles, PlusCircle, Check, Trash2 } from 'lucide-react';
-import { GeminiStatus } from './GeminiStatus.tsx';
 
 interface HeaderProps {
   onExportExcel: () => void;
@@ -49,7 +48,6 @@ export const Header: React.FC<HeaderProps> = ({
                   <Sparkles className="w-3 h-3 text-emerald-600" />
                   Asistente Contable
                 </span>
-                <GeminiStatus />
               </div>
               <p className="text-xs text-slate-500">
                 Desglose impositivo de compras, IVA, IIBB, Ganancias y parametrización de facturación
