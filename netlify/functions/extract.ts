@@ -311,7 +311,6 @@ export const handler = async (event: any) => {
 
     const apiKey = process.env.GEMINI_API_KEY;
 
-    // Sin API key: usar parser de texto si hay, o devolver estructura vacía
     if (!apiKey) {
       console.warn('GEMINI_API_KEY no configurada');
       const parsed =
@@ -343,7 +342,6 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
     const effectiveMime = isPdf ? 'application/pdf' : mimeType || 'image/jpeg';
     const parts: any[] = [];
 
-    // Siempre enviar el archivo a Gemini si no hay buen texto extraído
     if (!rawPdfText || rawPdfText.length < 80) {
       parts.push({
         inlineData: {
@@ -355,7 +353,7 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
     parts.push({ text: promptText });
 
     const response: any = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: { parts },
       config: {
         responseMimeType: 'application/json',
@@ -440,7 +438,6 @@ ${rawPdfText ? `Texto extraído:\n"""\n${rawPdfText.substring(0, 3500)}\n"""` : 
   } catch (error: any) {
     console.error('Error en extract:', error?.message || error);
 
-    // Último recurso: intentar parser de texto
     try {
       const body: ExtractBody = JSON.parse(event.body || '{}');
       const cleanBase64 = (body.fileBase64 || '').replace(/^data:[^;]+;base64,/, '');
