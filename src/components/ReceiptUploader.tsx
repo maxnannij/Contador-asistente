@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { UploadCloud, FileText, Image as ImageIcon, Loader2, CheckCircle2, AlertCircle, PlusCircle } from 'lucide-react';
 import { Receipt } from '../types/receipt.ts';
-import { extractReceiptFromOcrText, extractReceiptsFromPdf } from '../utils/localPdfParser.ts';
+import { extractReceiptFromOcrText, extractReceiptsFromPdf, extractStatementIdentity } from '../utils/localPdfParser.ts';
 import { recognizeImageLocally, recognizeScannedPdfLocally } from '../utils/localOcr.ts';
 
 interface ReceiptUploaderProps {
@@ -16,6 +16,7 @@ interface QueueItem {
 export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdded, onOpenManualModal }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [statementIdentity, setStatementIdentity] = useState<{ holderName: string; cuit: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const updateQueueMessage = (id: string, message: string) => {
@@ -38,16 +39,18 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
         if (file.type === 'application/pdf') {
           const result = await extractReceiptsFromPdf(file);
           receipts = result.receipts;
+          if (result.identity) setStatementIdentity(result.identity);
 
           // Si el PDF no tiene texto seleccionable o las reglas no pudieron leerlo,
           // renderizamos sus páginas y aplicamos OCR local.
           if (!receipts.length || receipts.every((receipt) => receipt.status === 'manual')) {
             updateQueueMessage(id, 'PDF escaneado: iniciando OCR local...');
             const text = await recognizeScannedPdfLocally(file, (message) => updateQueueMessage(id, message));
-            if (text && /RESUMEN DE CUENTA/i.test(text) && (/MERCADO\\s*PAGO/i.test(text) || /CVU:/i.test(text))) {
-              throw new Error('El OCR reconoció un resumen de Mercado Pago. La extracción de movimientos múltiples requiere por ahora un PDF con texto seleccionable; no se cargó ningún registro.');
-            }
-            if (text) {
+            if (text && /RESUMEN\s+DE\s+CUENTA/i.test(text) && (/MERCADO\s*PAGO/i.test(text) || /CVU\s*:/i.test(text))) {
+              const identity = extractStatementIdentity(text);
+              if (identity) setStatementIdentity(identity);
+              receipts = [];
+            } else if (text) {
               receipts = [extractReceiptFromOcrText(text, file)];
             } else {
               throw new Error('No se reconoció texto. Probá con una imagen más nítida o completá los datos manualmente.');
@@ -56,7 +59,13 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
         } else {
           const text = await recognizeImageLocally(file, (message) => updateQueueMessage(id, message));
           if (!text) throw new Error('No se reconoció texto. Probá con una imagen más nítida o completá los datos manualmente.');
-          receipts = [extractReceiptFromOcrText(text, file)];
+          if (/RESUMEN\s+DE\s+CUENTA/i.test(text) && (/MERCADO\s*PAGO/i.test(text) || /CVU\s*:/i.test(text))) {
+            const identity = extractStatementIdentity(text);
+            if (identity) setStatementIdentity(identity);
+            receipts = [];
+          } else {
+            receipts = [extractReceiptFromOcrText(text, file)];
+          }
         }
 
         const fileDataUrl = await readFileAsDataUrl(file);
@@ -111,6 +120,13 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
         <p className="text-sm font-semibold text-slate-800">Seleccioná o arrastrá tus comprobantes</p>
         <p className="text-xs text-slate-500 mt-1">PDF, JPG, PNG o WEBP · OCR en español procesado en este dispositivo</p>
       </div>
+      {statementIdentity && <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+        <h3 className="text-sm font-bold text-emerald-900">Datos del titular de la cuenta</h3>
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+          <div><span className="block text-xs text-emerald-700">Persona a la que corresponde</span><strong className="text-slate-900">{statementIdentity.holderName || 'No identificado'}</strong></div>
+          <div><span className="block text-xs text-emerald-700">CUIT / CUIL</span><strong className="text-slate-900">{statementIdentity.cuit || 'No identificado'}</strong></div>
+        </div>
+      </div>}
       {queue.length > 0 && <div className="mt-4 border-t border-slate-100 pt-3">
         <div className="flex justify-between text-xs font-semibold text-slate-600 mb-2">
           <span>Archivos procesados ({queue.filter((item) => item.status === 'success').length}/{queue.length})</span>
