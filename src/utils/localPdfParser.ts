@@ -40,7 +40,7 @@ function groupLines(items: PdfItem[]): PdfLine[] {
 }
 
 async function readPdf(file: File): Promise<PdfLine[][]> {
-  const document = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const document = await pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
   const pages: PdfLine[][] = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
     const page = await document.getPage(pageNumber);
