@@ -44,6 +44,9 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
           if (!receipts.length || receipts.every((receipt) => receipt.status === 'manual')) {
             updateQueueMessage(id, 'PDF escaneado: iniciando OCR local...');
             const text = await recognizeScannedPdfLocally(file, (message) => updateQueueMessage(id, message));
+            if (text && /RESUMEN DE CUENTA/i.test(text) && (/MERCADO\\s*PAGO/i.test(text) || /CVU:/i.test(text))) {
+              throw new Error('El OCR reconoció un resumen de Mercado Pago. La extracción de movimientos múltiples requiere por ahora un PDF con texto seleccionable; no se cargó ningún registro.');
+            }
             if (text) {
               receipts = [extractReceiptFromOcrText(text, file)];
             } else {
