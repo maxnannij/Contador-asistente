@@ -34,3 +34,8 @@ https://maxnannij.github.io/Contador-asistente/
 - Los datos del reporte y parámetros se guardan en el almacenamiento local del navegador. Se recomienda exportar periódicamente copias de Excel.
 
 **Importante:** la extracción por reglas no reemplaza la revisión contable. Los formatos de comprobantes varían; verificar los importes antes de utilizarlos en una declaración o registración.
+
+
+## OCR local
+
+Las imágenes (JPG, PNG, WEBP) y los PDF escaneados se procesan con Tesseract.js en el navegador. Las páginas PDF se renderizan localmente con PDF.js y el texto reconocido se pasa a las mismas reglas contables del extractor actual. Los archivos y su contenido no se envían a servicios externos. En el primer uso, Tesseract.js descarga el motor y el modelo de idioma español desde su distribución pública y los conserva en caché del navegador; por eso se necesita conexión a Internet para esa primera inicialización. Los resultados OCR quedan marcados para revisión manual. El OCR reconoce texto, no valida la exactitud contable de los importes.
