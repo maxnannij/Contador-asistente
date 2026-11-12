@@ -1,9 +1,9 @@
-import { createWorker } from 'tesseract.js';
+import { createWorker, type Worker } from 'tesseract.js';
 import * as pdfjsLib from 'pdfjs-dist';
 
 type ProgressCallback = (message: string) => void;
 
-let workerPromise: ReturnType<typeof createWorker> | null = null;
+let workerPromise: Promise<Worker> | null = null;
 let activeProgress: ProgressCallback | undefined;
 
 function getWorker(onProgress?: ProgressCallback): Promise<Worker> {
@@ -57,7 +57,7 @@ export async function recognizeScannedPdfLocally(
 
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
-    await page.render({ canvasContext: context, viewport }).promise;
+    await page.render({ canvas, canvasContext: context, viewport }).promise;
 
     onProgress?.(`Reconociendo página ${pageNumber} de ${pdf.numPages}...`);
     const { data } = await worker.recognize(canvas);
