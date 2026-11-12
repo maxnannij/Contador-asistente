@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { UploadCloud, FileText, Image as ImageIcon, Loader2, CheckCircle2, AlertCircle, PlusCircle } from 'lucide-react';
 import { Receipt } from '../types/receipt.ts';
+import { extractReceiptFromOcrText, extractReceiptsFromPdf } from '../utils/localPdfParser.ts';
+import { recognizeImageLocally, recognizeScannedPdfLocally } from '../utils/localOcr.ts';
 
 interface ReceiptUploaderProps {
   onReceiptsAdded: (newReceipts: Receipt[]) => void;
@@ -16,47 +18,57 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const updateQueueMessage = (id: string, message: string) => {
+    setQueue((items) => items.map((item) => item.id === id ? { ...item, message } : item));
+  };
+
   const processFiles = async (files: FileList | File[]) => {
     const accepted = Array.from(files).filter((file) =>
       file.type === 'application/pdf' || file.type.startsWith('image/'),
     );
     if (!accepted.length) return;
     const added: Receipt[] = [];
+
     for (const file of accepted) {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setQueue((items) => [{ id, name: file.name, size: file.size, type: file.type, status: 'processing' }, ...items]);
+      setQueue((items) => [{ id, name: file.name, size: file.size, type: file.type, status: 'processing', message: 'Preparando archivo...' }, ...items]);
       try {
+        let receipts: Receipt[] = [];
+
         if (file.type === 'application/pdf') {
-          const { extractReceiptsFromPdf } = await import('../utils/localPdfParser.ts');
           const result = await extractReceiptsFromPdf(file);
-          const withFileData = await readFileAsDataUrl(file);
-          const receipts = result.receipts.map((receipt) => ({
-            ...receipt,
-            fileDataUrl: withFileData,
-            id: `${receipt.id}-${id}`,
-          }));
-          added.push(...receipts);
-          setQueue((items) => items.map((item) => item.id === id
-            ? { ...item, status: 'success', count: receipts.length, message: result.warning || (result.isStatement ? 'Movimientos detectados' : 'PDF leído localmente') }
-            : item));
+          receipts = result.receipts;
+
+          // Si el PDF no tiene texto seleccionable o las reglas no pudieron leerlo,
+          // renderizamos sus páginas y aplicamos OCR local.
+          if (!receipts.length || receipts.every((receipt) => receipt.status === 'manual')) {
+            updateQueueMessage(id, 'PDF escaneado: iniciando OCR local...');
+            const text = await recognizeScannedPdfLocally(file, (message) => updateQueueMessage(id, message));
+            if (text) {
+              receipts = [extractReceiptFromOcrText(text, file)];
+            } else {
+              throw new Error('No se reconoció texto. Probá con una imagen más nítida o completá los datos manualmente.');
+            }
+          }
         } else {
-          // Las imágenes se guardan localmente para carga y revisión manual; no se envían a ningún servicio.
-          const dataUrl = await readFileAsDataUrl(file);
-          const receipt: Receipt = {
-            id, fileName: file.name, fileType: 'image', fileDataUrl: dataUrl,
-            date: new Date().toISOString().slice(0, 10), docType: 'Otro', docNumber: '',
-            vendor: 'Completar proveedor', cuit: '', currency: 'ARS', exchangeRate: 1,
-            netAmount: 0, vat21: 0, vat105: 0, vat27: 0, vatTotal: 0,
-            iibbCaba: 0, iibbBsAs: 0, iibbOther: 0, profitsTax: 0, exemptAmount: 0,
-            otherTaxes: 0, totalAmount: 0, category: 'Varios',
-            notes: 'Imagen importada sin OCR. Completar los datos manualmente.',
-            status: 'manual', createdAt: Date.now(),
-          };
-          added.push(receipt);
-          setQueue((items) => items.map((item) => item.id === id
-            ? { ...item, status: 'success', count: 1, message: 'Imagen guardada; completar manualmente' }
-            : item));
+          const text = await recognizeImageLocally(file, (message) => updateQueueMessage(id, message));
+          if (!text) throw new Error('No se reconoció texto. Probá con una imagen más nítida o completá los datos manualmente.');
+          receipts = [extractReceiptFromOcrText(text, file)];
         }
+
+        const fileDataUrl = await readFileAsDataUrl(file);
+        const prepared = receipts.map((receipt, index) => ({
+          ...receipt,
+          fileDataUrl,
+          id: `${receipt.id}-${id}-${index}`,
+          notes: receipt.notes.includes('OCR local')
+            ? receipt.notes
+            : `${receipt.notes} Archivo procesado en este dispositivo.`,
+        }));
+        added.push(...prepared);
+        setQueue((items) => items.map((item) => item.id === id
+          ? { ...item, status: 'success', count: prepared.length, message: prepared.some((receipt) => receipt.notes.includes('OCR local')) ? 'OCR local completado; revisar datos' : 'PDF leído localmente' }
+          : item));
       } catch (error: any) {
         setQueue((items) => items.map((item) => item.id === id
           ? { ...item, status: 'error', message: error?.message || 'No se pudo leer el archivo' }
@@ -77,7 +89,7 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
           <h2 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
             <UploadCloud className="w-5 h-5 text-emerald-600" /> Cargar comprobantes de compras y pagos
           </h2>
-          <p className="text-xs text-slate-500 mt-1">Los PDF con texto se analizan en este dispositivo mediante reglas. Las imágenes y los PDF escaneados requieren revisión manual. Ningún archivo se envía a un servidor.</p>
+          <p className="text-xs text-slate-500 mt-1">Los PDF con texto se analizan directamente. Las imágenes y los PDF escaneados utilizan OCR local en español. Los comprobantes no se envían a ningún servicio externo.</p>
         </div>
         <button onClick={onOpenManualModal} className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg">
           <PlusCircle className="w-4 h-4" /> Carga manual
@@ -94,7 +106,7 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
           onChange={(event) => { if (event.target.files) processFiles(event.target.files); event.target.value = ''; }} />
         <UploadCloud className="w-8 h-8 mx-auto text-emerald-700 mb-2" />
         <p className="text-sm font-semibold text-slate-800">Seleccioná o arrastrá tus comprobantes</p>
-        <p className="text-xs text-slate-500 mt-1">PDF, JPG, PNG o WEBP · Procesamiento local, sin IA</p>
+        <p className="text-xs text-slate-500 mt-1">PDF, JPG, PNG o WEBP · OCR en español procesado en este dispositivo</p>
       </div>
       {queue.length > 0 && <div className="mt-4 border-t border-slate-100 pt-3">
         <div className="flex justify-between text-xs font-semibold text-slate-600 mb-2">
