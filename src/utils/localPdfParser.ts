@@ -216,6 +216,7 @@ export async function extractReceiptsFromPdf(file: File): Promise<{ receipts: Re
 /** Convierte el texto OCR en un comprobante usando las mismas reglas locales del lector PDF. */
 export function extractReceiptFromOcrText(text: string, file: File): Receipt {
   const receipt = parseInvoice(text, file);
-  receipt.notes = `Texto reconocido mediante OCR local. Verificar todos los campos e importes antes de contabilizar. ${receipt.notes}`;
+  receipt.status = 'manual';
+  receipt.notes = `OCR local: revisar todos los campos e importes antes de contabilizar. ${receipt.notes}`;
   return receipt;
 }
