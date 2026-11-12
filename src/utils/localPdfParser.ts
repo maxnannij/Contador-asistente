@@ -9,6 +9,35 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 type PdfItem = { str: string; x: number; y: number; width: number };
 type PdfLine = { y: number; text: string; cells: { x: number; text: string }[] };
 
+
+export interface StatementIdentity {
+  holderName: string;
+  cuit: string;
+}
+
+/** Extrae los datos del titular del encabezado de un resumen de cuenta. */
+export function extractStatementIdentity(text: string): StatementIdentity | null {
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const titleIndex = lines.findIndex((line) => /RESUMEN\s+DE\s+CUENTA/i.test(line));
+  let holderName = '';
+  if (titleIndex >= 0) {
+    for (const line of lines.slice(titleIndex + 1, titleIndex + 5)) {
+      if (/^(CVU|CBU|CUIT|CUIL|PER[IÍ]ODO)\b/i.test(line)) continue;
+      if (/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}/.test(line)) {
+        holderName = line.trim();
+        break;
+      }
+    }
+  }
+  const cuitMatch = /(?:CUIT\s*\/\s*CUIL|CUIT|CUIL)\s*[:：]?\s*((?:\d[.\s-]?){11})/i.exec(text);
+  const digits = cuitMatch?.[1].replace(/\D/g, '') || '';
+  const cuit = digits.length === 11
+    ? digits.slice(0, 2) + '-' + digits.slice(2, 10) + '-' + digits.slice(10)
+    : '';
+  if (!holderName && !cuit) return null;
+  return { holderName, cuit };
+}
+
 const amount = (value?: string) =>
   value ? Number.parseFloat(value.replace(/\./g, '').replace(',', '.')) || 0 : 0;
 
@@ -197,13 +226,14 @@ function parseInvoice(text: string, file: File): Receipt {
   return receipt;
 }
 
-export async function extractReceiptsFromPdf(file: File): Promise<{ receipts: Receipt[]; isStatement: boolean; warning?: string }> {
+export async function extractReceiptsFromPdf(file: File): Promise<{ receipts: Receipt[]; isStatement: boolean; warning?: string; identity?: StatementIdentity }> {
   const pages = await readPdf(file);
   const fullText = pages.flat().map((line) => line.text).join('\n');
   if (/RESUMEN DE CUENTA/i.test(fullText) && (/MERCADO\s*PAGO/i.test(fullText) || /CVU:/i.test(fullText))) {
     const movements = parseMercadoPago(pages, file);
-    if (movements.length) return { receipts: movements, isStatement: true };
-    return { receipts: [], isStatement: true, warning: 'Se reconoció el resumen, pero no se detectaron egresos con el formato esperado.' };
+    const identity = extractStatementIdentity(fullText) || undefined;
+    if (movements.length) return { receipts: movements, isStatement: true, identity };
+    return { receipts: [], isStatement: true, identity, warning: 'Se reconoció el resumen, pero no se detectaron egresos con el formato esperado.' };
   }
   return {
     receipts: [parseInvoice(fullText, file)],
