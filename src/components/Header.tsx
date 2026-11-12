@@ -7,7 +7,7 @@ interface HeaderProps {
   onOpenManualModal: () => void;
   onClearAll: () => void;
   copied: boolean;
-  activeTab: 'reporte' | 'facturar' | 'analisis';
+  activeTab: 'reporte' | 'facturar' | 'analisis' | 'impuestos';
   setActiveTab: (tab: 'reporte' | 'facturar' | 'analisis') => void;
   selectedMonth: string;
   setSelectedMonth: (month: string) => void;
@@ -176,6 +176,16 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             📊 Análisis Financiero Impositivo
+          </button>
+          <button
+            onClick={() => setActiveTab('impuestos')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+              activeTab === 'impuestos'
+                ? 'border-emerald-600 text-emerald-700 font-semibold'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'
+            }`}
+          >
+            🧾 Parámetros Impositivos
           </button>
         </div>
       </div>
