@@ -61,13 +61,13 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
           ...receipt,
           fileDataUrl,
           id: `${receipt.id}-${id}-${index}`,
-          notes: receipt.notes.includes('OCR local')
+          notes: (receipt.notes || '').includes('OCR local')
             ? receipt.notes
             : `${receipt.notes} Archivo procesado en este dispositivo.`,
         }));
         added.push(...prepared);
         setQueue((items) => items.map((item) => item.id === id
-          ? { ...item, status: 'success', count: prepared.length, message: prepared.some((receipt) => receipt.notes.includes('OCR local')) ? 'OCR local completado; revisar datos' : 'PDF leído localmente' }
+          ? { ...item, status: 'success', count: prepared.length, message: prepared.some((receipt) => (receipt.notes || '').includes('OCR local')) ? 'OCR local completado; revisar datos' : 'PDF leído localmente' }
           : item));
       } catch (error: any) {
         setQueue((items) => items.map((item) => item.id === id
