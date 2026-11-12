@@ -174,7 +174,40 @@ function parseMercadoPago(pages: PdfLine[][], file: File): Receipt[] {
   return receipts;
 }
 
+
+/**
+ * Tickets no fiscales: el total de compra es el SUBTOTAL.
+ * Nunca tomar "PAGA CON" ni "VUELTO" como importe del comprobante.
+ */
+function parseNonFiscalTicket(text: string, file: File): Receipt | null {
+  if (!/NO\s+V[AÁ]LIDO\s+COMO\s+FACTURA|FORMA\s+DE\s+PAGO|VUELTO\s*:/i.test(text)) return null;
+
+  const receipt = blankReceipt(file);
+  const date = /(?:FECHA\s*:\s*)?(\d{2})[-/](\d{2})[-/](\d{4})/i.exec(text);
+  if (date) receipt.date = excelDate(date[1], date[2], date[3]);
+
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const subtotalLine = lines.find((line) => /\bSUB\s*TOTAL\b/i.test(line));
+  const amountMatch = subtotalLine?.match(/(?:\$?\s*)(\d[\d.\s]*,\d{2})/);
+  if (amountMatch) {
+    const normalized = amountMatch[1].replace(/\s/g, '');
+    receipt.totalAmount = amount(normalized);
+    receipt.netAmount = receipt.totalAmount;
+  }
+
+  receipt.docType = 'Comprobante de Pago';
+  receipt.category = 'Compras / Ticket no fiscal';
+  receipt.vendor = 'Revisar comercio';
+  receipt.status = 'manual';
+  receipt.notes = receipt.totalAmount > 0
+    ? 'Ticket no válido como factura. Se tomó el importe de SUBTOTAL como total de la compra; se ignoraron PAGA CON y VUELTO. Verificar el importe y completar los datos fiscales manualmente.'
+    : 'Ticket no válido como factura. No se pudo identificar con seguridad el SUBTOTAL. Completar el importe manualmente; no se utilizaron PAGA CON ni VUELTO.';
+  return receipt;
+}
+
 function parseInvoice(text: string, file: File): Receipt {
+  const ticket = parseNonFiscalTicket(text, file);
+  if (ticket) return ticket;
   const receipt = blankReceipt(file);
   const date = /Fecha:\s*(\d{2})[\/-](\d{2})[\/-](\d{4})/i.exec(text)
     || /(\d{2})[\/-](\d{2})[\/-](\d{4})/.exec(text);
