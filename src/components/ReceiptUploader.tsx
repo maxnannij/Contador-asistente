@@ -1,7 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { UploadCloud, FileText, Image as ImageIcon, Loader2, CheckCircle2, AlertCircle, PlusCircle } from 'lucide-react';
 import { Receipt } from '../types/receipt.ts';
-import { extractReceiptsFromPdf } from '../utils/localPdfParser.ts';
 
 interface ReceiptUploaderProps {
   onReceiptsAdded: (newReceipts: Receipt[]) => void;
@@ -28,6 +27,7 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
       setQueue((items) => [{ id, name: file.name, size: file.size, type: file.type, status: 'processing' }, ...items]);
       try {
         if (file.type === 'application/pdf') {
+          const { extractReceiptsFromPdf } = await import('../utils/localPdfParser.ts');
           const result = await extractReceiptsFromPdf(file);
           const withFileData = await readFileAsDataUrl(file);
           const receipts = result.receipts.map((receipt) => ({
@@ -105,14 +105,13 @@ export const ReceiptUploader: React.FC<ReceiptUploaderProps> = ({ onReceiptsAdde
           {queue.map((item) => <div key={item.id} className="flex items-center justify-between gap-3 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs">
             <div className="flex items-center gap-2 min-w-0">
               {item.type === 'application/pdf' ? <FileText className="w-4 h-4 text-red-500 shrink-0" /> : <ImageIcon className="w-4 h-4 text-blue-500 shrink-0" />}
-              <span className="truncate font-medium">{item.name}</span><span className="text-slate-400 shrink-0">{(item.size / 1024).toFixed(0)} KB</span>
+              <div className="min-w-0"><span className="block truncate font-medium">{item.name}</span>{item.message && <span className="block truncate text-[10px] text-slate-500">{item.message}</span>}</div><span className="text-slate-400 shrink-0">{(item.size / 1024).toFixed(0)} KB</span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {item.status === 'processing' && <><Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" /> Procesando</>}
               {item.status === 'success' && <><CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> {item.count} registro(s)</>}
               {item.status === 'error' && <><AlertCircle className="w-3.5 h-3.5 text-rose-600" /> {item.message || 'Error'}</>}
             </div>
-            {item.message && item.status !== 'processing' && <span className="sr-only">{item.message}</span>}
           </div>)}
         </div>
       </div>}
