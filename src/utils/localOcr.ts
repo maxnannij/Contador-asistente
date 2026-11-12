@@ -1,9 +1,9 @@
-import { createWorker, type Worker } from 'tesseract.js';
+import { createWorker } from 'tesseract.js';
 import * as pdfjsLib from 'pdfjs-dist';
 
 type ProgressCallback = (message: string) => void;
 
-let workerPromise: Promise<Worker> | null = null;
+let workerPromise: ReturnType<typeof createWorker> | null = null;
 let activeProgress: ProgressCallback | undefined;
 
 function getWorker(onProgress?: ProgressCallback): Promise<Worker> {
