@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Receipt, BillingParameters } from './types/receipt.ts';
+import { TaxParameter, TaxParameterHistory, DEFAULT_TAX_PARAMETERS } from './types/taxParameters.ts';
 import { INITIAL_RECEIPTS } from './data/initialReceipts.ts';
 import {
   calculateReceiptSummary,
@@ -19,9 +20,12 @@ import { ReceiptTable } from './components/ReceiptTable.tsx';
 import { BillingParameterizer } from './components/BillingParameterizer.tsx';
 import { FinancialAnalysis } from './components/FinancialAnalysis.tsx';
 import { ReceiptModal } from './components/ReceiptModal.tsx';
+import { TaxSettings } from './components/TaxSettings.tsx';
 
 const STORAGE_KEY = 'contadoc_receipts_v2';
 const BILLING_STORAGE_KEY = 'contadoc_billing_params_v1';
+const TAX_PARAMETERS_KEY = 'contadoc_tax_parameters_v1';
+const TAX_HISTORY_KEY = 'contadoc_tax_parameters_history_v1';
 
 export default function App() {
   // Clear any legacy demo data from v1
@@ -63,7 +67,22 @@ export default function App() {
     };
   });
 
-  const [activeTab, setActiveTab] = useState<'reporte' | 'facturar' | 'analisis'>('reporte');
+  const [taxParameters, setTaxParameters] = useState<TaxParameter[]>(() => {
+    try {
+      const stored = localStorage.getItem(TAX_PARAMETERS_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch (e) { console.warn('Error leyendo parámetros fiscales:', e); }
+    return DEFAULT_TAX_PARAMETERS;
+  });
+  const [taxHistory, setTaxHistory] = useState<TaxParameterHistory[]>(() => {
+    try {
+      const stored = localStorage.getItem(TAX_HISTORY_KEY);
+      if (stored) return JSON.parse(stored);
+    } catch (e) { console.warn('Error leyendo historial fiscal:', e); }
+    return [];
+  });
+
+  const [activeTab, setActiveTab] = useState<'reporte' | 'facturar' | 'analisis' | 'impuestos'>('reporte');
   const [selectedMonth, setSelectedMonth] = useState<string>('todos');
   const [copied, setCopied] = useState(false);
   const [showDiscrepancyFilter, setShowDiscrepancyFilter] = useState(false);
@@ -96,6 +115,41 @@ export default function App() {
       console.error('Error saving billing params:', e);
     }
   }, [billingParams]);
+
+  useEffect(() => {
+    try { localStorage.setItem(TAX_PARAMETERS_KEY, JSON.stringify(taxParameters)); }
+    catch (e) { console.error('Error guardando parámetros fiscales:', e); }
+  }, [taxParameters]);
+
+  useEffect(() => {
+    try { localStorage.setItem(TAX_HISTORY_KEY, JSON.stringify(taxHistory)); }
+    catch (e) { console.error('Error guardando historial fiscal:', e); }
+  }, [taxHistory]);
+
+  const recordTaxHistory = (entry: Omit<TaxParameterHistory, 'id' | 'changedAt'>) => {
+    setTaxHistory((prev) => [{ ...entry, id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, changedAt: new Date().toISOString() }, ...prev]);
+  };
+
+  const handleAddTaxParameter = (parameter: TaxParameter) => {
+    setTaxParameters((prev) => [...prev, parameter]);
+    recordTaxHistory({ parameterId: parameter.id, parameterName: parameter.name, action: 'creado', newValue: parameter.value, newEffectiveFrom: parameter.effectiveFrom, source: parameter.source });
+  };
+
+  const handleUpdateTaxParameter = (parameter: TaxParameter) => {
+    const previous = taxParameters.find((item) => item.id === parameter.id);
+    if (previous) recordTaxHistory({ parameterId: parameter.id, parameterName: parameter.name, action: 'modificado', previousValue: previous.value, newValue: parameter.value, previousEffectiveFrom: previous.effectiveFrom, newEffectiveFrom: parameter.effectiveFrom, source: parameter.source });
+    setTaxParameters((prev) => prev.map((item) => item.id === parameter.id ? parameter : item));
+  };
+
+  const handleDeleteTaxParameter = (parameter: TaxParameter) => {
+    recordTaxHistory({ parameterId: parameter.id, parameterName: parameter.name, action: 'eliminado', previousValue: parameter.value, previousEffectiveFrom: parameter.effectiveFrom, source: parameter.source });
+    setTaxParameters((prev) => prev.filter((item) => item.id !== parameter.id));
+  };
+
+  const handleResetTaxParameters = () => {
+    setTaxParameters(DEFAULT_TAX_PARAMETERS);
+    recordTaxHistory({ parameterId: 'all', parameterName: 'Todos los parámetros', action: 'modificado', source: 'Restauración de valores iniciales' });
+  };
 
   // Available months for filtering
   const availableMonths = useMemo(() => {
@@ -241,6 +295,17 @@ export default function App() {
           showDiscrepancyFilter={showDiscrepancyFilter}
           onFilterDiscrepancies={() => setShowDiscrepancyFilter(!showDiscrepancyFilter)}
         />
+
+        {activeTab === 'impuestos' && (
+          <TaxSettings
+            parameters={taxParameters}
+            history={taxHistory}
+            onAdd={handleAddTaxParameter}
+            onUpdate={handleUpdateTaxParameter}
+            onDelete={handleDeleteTaxParameter}
+            onReset={handleResetTaxParameters}
+          />
+        )}
 
         {/* Tab 1: Detailed Receipts Report */}
         {activeTab === 'reporte' && (
