@@ -192,7 +192,7 @@ function parseNonFiscalTicket(text: string, file: File): Receipt | null {
   if (amountMatch) {
     const normalized = amountMatch[1].replace(/\s/g, '');
     receipt.totalAmount = amount(normalized);
-    receipt.netAmount = receipt.totalAmount;
+    // No inferimos neto ni IVA: el ticket no discrimina impuestos.
   }
 
   receipt.docType = 'Comprobante de Pago';
